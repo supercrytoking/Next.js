@@ -1,0 +1,130 @@
+variables:
+  CI_NAME_SLUG: "login-portal"
+  GIT_STRATEGY: clone
+  GIT_CLEAN_FLAGS: none
+  # Avoid shallow clone, as otherwise the total number of commits for versioning cannot be determined.
+  GIT_DEPTH: 0
+  REGISTRY_IMAGE: $CI_REGISTRY_IMAGE:$CI_BUILD_REF
+  GITHUB_URL: ghcr.io/lyonl/
+  GITHUB_REGISTRY: ${GITHUB_URL}facade.login-portal/
+  GITHUB_REGISTRY_IMAGE: $GITHUB_REGISTRY$CI_NAME_SLUG:$CI_BUILD_REF
+  DOCKER_DRIVER: overlay2
+stages:
+  - test
+  - build
+  - deploy
+test:
+  image: node:alpine
+  stage: test
+  except:
+    - tags
+  before_script:
+    - apt update && apt install default-jre -y -qq
+    - yarn install
+  script:
+    - yarn test --all
+  artifacts:
+    paths:
+      - publish/coverage.opencover.xml
+build:
+  only:
+    - main
+  stage: build
+  image: docker:stable
+  services:
+    - docker:dind
+  before_script:
+    - apk add --update make ca-certificates openssl
+    - update-ca-certificates
+    - docker login -u chad-vogel -p $GITHUB_TOKEN $GITHUB_URL
+  script:
+    - >-
+      docker build -f Dockerfile
+      --build-arg NODE_ENV=production
+      --build-arg NEXT_PUBLIC_SERVICE_AUTH_URI=$NEXT_PUBLIC_SERVICE_AUTH_URI
+      --build-arg NEXT_PUBLIC_SERVICE_AUTH_BFF_URI=$NEXT_PUBLIC_SERVICE_AUTH_BFF_URI
+      --build-arg NEXT_PUBLIC_SERVICE_UD_URI=$NEXT_PUBLIC_SERVICE_UD_URI
+      --build-arg NEXT_PUBLIC_SERVICE_DROPDOWN_URI=$NEXT_PUBLIC_SERVICE_DROPDOWN_URI
+      --build-arg NEXT_PUBLIC_SERVICE_APPLICATIONS_URI=$NEXT_PUBLIC_SERVICE_APPLICATIONS_URI
+      --build-arg NEXT_PUBLIC_SOCIAL_URI=$NEXT_PUBLIC_SOCIAL_URI
+      --build-arg NEXT_PUBLIC_SERVICE_CONTACTS_URL=$NEXT_PUBLIC_SERVICE_CONTACTS_URL
+      --build-arg NEXT_PUBLIC_SERVICE_SAML_URL=$NEXT_PUBLIC_SERVICE_SAML_URL
+      --build-arg NEXT_PUBLIC_SERVICE_APPLICATIONS_URI=$NEXT_PUBLIC_SERVICE_APPLICATIONS_URI
+      --build-arg NEXT_PUBLIC_SERVICE_SAML_URL=$NEXT_PUBLIC_SERVICE_SAML_URL
+      --tag $GITHUB_REGISTRY_IMAGE
+      --tag $GITHUB_REGISTRY$CI_NAME_SLUG:latest
+      .
+    - docker push $GITHUB_REGISTRY_IMAGE
+    - docker push $GITHUB_REGISTRY$CI_NAME_SLUG:latest
+  after_script:
+    - docker logout $GITHUB_URL
+  artifacts:
+    paths:
+      - authentication.tar
+.deploy:
+  stage: deploy
+  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/google/cloud-sdk:latest
+  services:
+    - docker:dind
+  before_script:
+    - gcloud version
+    - apt update && apt install -y libc6-dev libgdiplus kubectl gettext-base
+    - echo $GCLOUD_SERVICE_KEY > ${HOME}/gcloud-service-key.json
+    - gcloud auth activate-service-account --key-file $HOME/gcloud-service-key.json
+    - gcloud container clusters get-credentials $K8S_POOL_NAME --zone us-central1-a --project miami-278821
+  script:
+    - echo "Deploy to staging server"
+    - >-
+      kubectl create secret docker-registry github-registry
+      --docker-server="$GITHUB_URL"
+      --docker-username="chad-vogel"
+      --docker-password="$GITHUB_TOKEN"
+      --docker-email="chad.vogel@lyonl.com"
+      -n $KUBE_NAMESPACE
+      --dry-run=client -o yaml
+      | kubectl apply -f -
+    - >-
+      envsubst < manifest.yaml 
+      | kubectl apply -f -
+.deploy2:
+  stage: deploy
+  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/ubuntu:20.04
+  services:
+    - docker:dind
+  before_script:
+    - apt update && apt install -y libc6-dev libgdiplus gettext-base apt-transport-https ca-certificates curl zip unzip coreutils
+    - curl -fsSLo /usr/share/keyrings/kubernetes-archive-keyring.gpg https://packages.cloud.google.com/apt/doc/apt-key.gpg
+    - echo "deb [signed-by=/usr/share/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main" | tee /etc/apt/sources.list.d/kubernetes.list
+    - apt-get update && apt-get install -y kubectl
+    - echo "Setting up aws cli"
+    - curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+    - unzip awscliv2.zip
+    - ./aws/install
+    - aws configure set aws_access_key_id $AWS_ACCESS_KEY_ID
+    - aws configure set aws_secret_access_key $AWS_SECRET_ACCESS_KEY
+    - aws configure set default.region $AWS_REGION
+    - aws eks update-kubeconfig --region $AWS_REGION --name $AWS_EKS_CLUSTER_NAME
+  script:
+    - echo "Deploy to staging server"
+    - kubectl create namespace $KUBE_NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+    - >-
+      kubectl create secret docker-registry github-registry
+      --docker-server="$GITHUB_URL"
+      --docker-username="chad-vogel"
+      --docker-password="$GITHUB_TOKEN"
+      --docker-email="chad.vogel@lyonl.com"
+      -n $KUBE_NAMESPACE
+      --dry-run=client -o yaml
+      | kubectl apply -f -
+    - >-
+      envsubst < manifest.yaml 
+      | kubectl apply -f -
+deploy_staging:
+  extends: .deploy
+  environment:
+    name: staging
+    url: https://beta.lyonl.com
+  only:
+    refs:
+      - main
+    kubernetes: active

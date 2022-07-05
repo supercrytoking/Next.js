@@ -1,0 +1,62 @@
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: $KUBE_NAMESPACE
+  name: ${CI_PROJECT_PATH_SLUG}-service
+  annotations:
+    app.gitlab.com/app: ${CI_PROJECT_PATH_SLUG}
+    app.gitlab.com/env: ${CI_ENVIRONMENT_SLUG}
+  labels:
+    application: ${CI_ENVIRONMENT_SLUG}
+    release: ${CI_ENVIRONMENT_SLUG}
+spec:
+  selector:
+    app: client
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+      name: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: $KUBE_NAMESPACE
+  name: client
+  annotations:
+    app.gitlab.com/app: ${CI_PROJECT_PATH_SLUG}
+    app.gitlab.com/env: ${CI_ENVIRONMENT_SLUG}
+  labels:
+    application: ${CI_ENVIRONMENT_SLUG}
+    release: ${CI_ENVIRONMENT_SLUG}
+    app.kubernetes.io/name: client
+    app.kubernetes.io/version: v1
+    app.kubernetes.io/part-of: miami
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: client
+  template:
+    metadata:
+      namespace: $KUBE_NAMESPACE
+      labels:
+        app: client
+        version: v1
+      annotations:
+        app.gitlab.com/app: ${CI_PROJECT_PATH_SLUG}
+        app.gitlab.com/env: ${CI_ENVIRONMENT_SLUG}
+    spec:
+      imagePullSecrets:
+        - name: github-registry
+      nodeSelector:
+        beta.kubernetes.io/os: linux
+      restartPolicy: Always
+      containers:
+        - name: client
+          image: >-
+            $GITHUB_REGISTRY_IMAGE
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+              name: http

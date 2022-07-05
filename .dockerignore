@@ -1,0 +1,7 @@
+.git
+.idea
+.vscode
+.storybook
+node_modules
+build
+coverage
